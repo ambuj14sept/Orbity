@@ -28,12 +28,24 @@ the bezel, tap to focus, and take the photo or start the video from the watch.
 
 The watch must already be paired with the phone (for Galaxy watches: through the **Galaxy Wearable** app).
 
-## Which files to download
+## Download
 
-There are two files, one for each device. Always install a **phone file and a watch file**.
+Get the latest version from the **[Releases page](https://github.com/ambuj14sept/Orbity/releases/latest)**.
+There are two files — install **both**, one on each device:
 
-| File | Install on | Use it if… |
-|---|---|---|
+| File | Install on |
+|---|---|
+| `Orbity-phone.apk` | Phone |
+| `Orbity-watch.apk` | Watch |
+
+These are the normal builds: they **never send anything off your phone** (no internet permission at all).
+Newer versions install over the top — your photos and settings are kept.
+
+> Testers may also get `Orbity-phone-dev.apk` / `Orbity-watch-dev.apk` from the developer. These also send
+> logs and crash reports to the developer (switchable on the phone). Normal and dev files work together and
+> install over each other.
+
+---|---|---|
 | `Orbity-phone.apk` | Phone | You just want to use Orbity. **Never sends anything off your phone.** |
 | `Orbity-watch.apk` | Watch | (goes with the phone file above) |
 | `Orbity-phone-dev.apk` | Phone | You are helping test: also sends logs and crash reports to the developer. |
