@@ -18,6 +18,18 @@ android {
         // Identifies the exact build in the logs.
         buildConfigField("String", "BUILD_TIME", "\"${LocalDateTime.now().withNano(0)}\"")
     }
+    // dev: forwards its logs to the phone app for upload. prod: no diagnostics.
+    flavorDimensions += "channel"
+    productFlavors {
+        create("dev") {
+            dimension = "channel"
+            buildConfigField("Boolean", "DIAGNOSTICS", "true")
+        }
+        create("prod") {
+            dimension = "channel"
+            buildConfigField("Boolean", "DIAGNOSTICS", "false")
+        }
+    }
     signingConfigs {
         // Shared, committed debug key: the phone and watch APKs must be signed with the same key
         // for the Data Layer to connect them, wherever they are built.

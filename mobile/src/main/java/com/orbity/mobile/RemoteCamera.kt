@@ -21,7 +21,7 @@ import android.view.Choreographer
 import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
-import androidx.activity.ComponentActivity
+import android.content.Context
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
@@ -53,8 +53,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.LifecycleOwner
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.Wearable
 import com.orbity.shared.CameraState
@@ -67,6 +66,7 @@ import com.orbity.shared.frameSeq
 import com.orbity.shared.frameWithHeader
 import com.orbity.shared.parseFocusPoint
 import com.orbity.shared.watchPointToBuffer
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -87,10 +87,17 @@ import kotlin.math.pow
 /** A tap-to-focus ring on the phone screen, in preview view pixels. */
 data class FocusRing(val x: Float, val y: Float, val focused: Boolean?, val id: Int)
 
-/** Owns the CameraX session on the phone and executes commands coming from the watch. */
+/**
+ * Owns the CameraX session on the phone and executes commands coming from the watch. Lives in
+ * [CameraService] so it keeps working with the phone screen off; the camera screen only attaches
+ * an on-screen preview while it is visible.
+ */
 class RemoteCamera(
-    private val activity: ComponentActivity,
-    private val previewView: PreviewView,
+    context: Context,
+    private val owner: LifecycleOwner,
+    private val scope: CoroutineScope,
+    /** Called (main thread) when the watch disconnects or a recording ends, so the host can stop when idle. */
+    private val onIdleCheck: () -> Unit,
 ) {
     // Read from background threads.
     @Volatile var watchNode: String? = null
@@ -119,7 +126,15 @@ class RemoteCamera(
     @Volatile private var lensFacing = CameraSelector.LENS_FACING_BACK
     private var availableModes = listOf(CaptureMode.PHOTO, CaptureMode.VIDEO)
 
-    private val appContext = activity.applicationContext
+    private val appContext = context.applicationContext
+    /** The camera screen's preview, while it is visible. */
+    private var previewView: PreviewView? = null
+    private var preview: Preview? = null
+    private var started = false
+    /** Camera closed while nothing needs it; reopened on demand. */
+    private var paused = false
+    /** Whether the bound mode streams watch frames from the analysis stream (else screen snapshots). */
+    private var analysisBound = true
     private val mainExecutor = ContextCompat.getMainExecutor(appContext)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val messageClient = Wearable.getMessageClient(appContext)
@@ -178,7 +193,13 @@ class RemoteCamera(
         }
     }
 
+    /** True while something needs the camera: a connected watch, a recording or live listening. */
+    val isBusy get() = watchConnected || recording != null || listening
+
     fun start() {
+        if (started) return
+        started = true
+        orientationListener.enable()
         val future = ProcessCameraProvider.getInstance(appContext)
         future.addListener({
             val cameraProvider = future.get()
@@ -193,8 +214,40 @@ class RemoteCamera(
         }, mainExecutor)
     }
 
+    /** Closes the camera (the green privacy dot goes off) while nothing needs it. */
+    fun pause() {
+        if (paused || provider == null) return
+        paused = true
+        Log.i(LOG_TAG, "Camera closed while idle")
+        stopRecording()
+        snapshotJob?.cancel()
+        Choreographer.getInstance().removeFrameCallback(zoomFrame)
+        zoomAnimating = false
+        provider?.unbindAll()
+        camera = null
+        preview = null
+        imageCapture = null
+        imageAnalysis = null
+        videoCapture = null
+    }
+
+    /** Reopens the camera after [pause]. */
+    private fun resume() {
+        if (!paused) return
+        paused = false
+        Log.i(LOG_TAG, "Camera reopened")
+        bind()
+    }
+
+    /** Stops everything and tells the watch the camera is closed. */
     fun release() {
+        Log.i(LOG_TAG, "Camera released")
         updateListening(false)
+        stopRecording()
+        send(Paths.CLOSED)
+        orientationListener.disable()
+        snapshotJob?.cancel()
+        provider?.unbindAll()
         mainHandler.removeCallbacksAndMessages(null)
         Choreographer.getInstance().removeFrameCallback(zoomFrame)
         analysisExecutor.shutdown()
@@ -217,12 +270,14 @@ class RemoteCamera(
                 watchConnected = true
                 resetInFlight()
                 resetFrameStats()
+                resume()
                 sendState()
             }
             Paths.STOP -> {
                 streaming = false
                 watchConnected = false
                 updateListening(false)
+                onIdleCheck()
             }
             Paths.SHUTTER -> shutter(event.data.firstOrNull()?.toInt() ?: 0)
             Paths.FLIP -> flip()
@@ -259,23 +314,25 @@ class RemoteCamera(
         watchConnected = true
         resetInFlight()
         resetFrameStats()
+        resume()
         sendState()
     }
 
-    /** The camera screen came back to the foreground; let a waiting watch resume. */
-    fun onForeground() {
-        Log.d(LOG_TAG, "Camera screen visible, streaming=$streaming")
-        orientationListener.enable()
-        if (streaming) sendState()
-    }
-
-    /** CameraX stops with the lifecycle; tell the watch the preview has stopped. */
-    fun onBackground() {
-        Log.d(LOG_TAG, "Camera screen hidden")
-        updateListening(false)
-        orientationListener.disable()
-        stopRecording()
-        send(Paths.CLOSED)
+    /** The camera screen shows [view] while visible, and passes null when hidden. */
+    fun attachPreview(view: PreviewView?) {
+        if (view === previewView) return
+        Log.d(LOG_TAG, "Phone screen preview ${if (view != null) "attached" else "detached"}")
+        previewView?.setLayerType(View.LAYER_TYPE_NONE, null)
+        previewView = view
+        preview?.setSurfaceProvider(view?.surfaceProvider)
+        applyPreviewFilter()
+        if (view != null) resume()
+        // Screen snapshots were feeding the watch; without a screen fall back to a mode that streams.
+        if (view == null && !analysisBound && camera != null) {
+            Log.i(LOG_TAG, "Mode ${mode.name} needs the phone screen for watch frames; switching to photo")
+            mode = CaptureMode.PHOTO
+            bind()
+        }
     }
 
     /** Takes a photo, or starts/stops a video, after an optional countdown. */
@@ -285,7 +342,7 @@ class RemoteCamera(
             return
         }
         if (captureJob?.isActive == true) return
-        captureJob = activity.lifecycleScope.launch {
+        captureJob = scope.launch {
             for (s in timerSeconds downTo 1) {
                 countdown = s
                 send(Paths.COUNTDOWN, byteArrayOf(s.toByte()))
@@ -298,12 +355,13 @@ class RemoteCamera(
 
     /** Tap on the phone screen at view coordinates. */
     fun focusAtView(x: Float, y: Float) {
+        val view = previewView ?: return
         val id = ++focusId
         focusRing = FocusRing(x, y, null, id)
-        focus(previewView.meteringPointFactory.createPoint(x, y)) { ok ->
+        focus(view.meteringPointFactory.createPoint(x, y)) { ok ->
             if (focusRing?.id == id) focusRing = focusRing?.copy(focused = ok)
         }
-        activity.lifecycleScope.launch {
+        scope.launch {
             delay(FOCUS_RING_MS)
             if (focusRing?.id == id) focusRing = null
         }
@@ -320,7 +378,9 @@ class RemoteCamera(
         } else {
             liveAudio.stop()
         }
+        val changed = listening != on
         listening = on
+        if (changed && !on) onIdleCheck()
     }
 
     // ---- Binding -------------------------------------------------------------------------
@@ -336,6 +396,7 @@ class RemoteCamera(
 
     private fun bind() {
         val provider = provider ?: return
+        if (paused) return
         stopRecording()
         Choreographer.getInstance().removeFrameCallback(zoomFrame)
         zoomAnimating = false
@@ -346,7 +407,11 @@ class RemoteCamera(
             add(CaptureMode.VIDEO)
             CaptureMode.entries.forEach { m ->
                 val ext = m.extensionMode() ?: return@forEach
-                if (runCatching { extensions?.isExtensionAvailable(base, ext) == true }.getOrDefault(false)) add(m)
+                val available = runCatching { extensions?.isExtensionAvailable(base, ext) == true }.getOrDefault(false)
+                // Without the phone screen, a mode must stream watch frames from the analysis stream.
+                val canStream = previewView != null ||
+                    runCatching { extensions?.isImageAnalysisSupported(base, ext) == true }.getOrDefault(false)
+                if (available && canStream) add(m)
             }
         }
         if (mode !in availableModes) mode = CaptureMode.PHOTO
@@ -356,7 +421,10 @@ class RemoteCamera(
             runCatching { extensions?.isImageAnalysisSupported(base, it) == true }.getOrDefault(false)
         } ?: true
 
-        val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+        val preview = Preview.Builder().build().also {
+            it.setSurfaceProvider(previewView?.surfaceProvider)
+            this.preview = it
+        }
         val analysis = buildAnalysis()
         var photo: ImageCapture? = null
         var video: VideoCapture<Recorder>? = null
@@ -375,6 +443,7 @@ class RemoteCamera(
         imageCapture = photo
         videoCapture = video
         imageAnalysis = analysis.takeIf { withAnalysis }
+        analysisBound = withAnalysis
         frameWidth = 0
         startSnapshots(enabled = bound != null && !withAnalysis)
 
@@ -401,7 +470,7 @@ class RemoteCamera(
     private fun tryBind(provider: ProcessCameraProvider, selector: CameraSelector, vararg useCases: UseCase): Camera? =
         runCatching {
             provider.unbindAll()
-            provider.bindToLifecycle(activity, selector, *useCases)
+            provider.bindToLifecycle(owner, selector, *useCases)
         }.onFailure {
             Log.e(LOG_TAG, "Binding ${useCases.joinToString { it.javaClass.simpleName }} failed", it)
         }.getOrNull()
@@ -467,12 +536,13 @@ class RemoteCamera(
 
     /** Tints the on-phone preview; the watch applies the same matrix to its own frames. */
     private fun applyPreviewFilter() {
+        val view = previewView ?: return
         val matrix = filter.matrix
         if (matrix == null) {
-            previewView.setLayerType(View.LAYER_TYPE_NONE, null)
+            view.setLayerType(View.LAYER_TYPE_NONE, null)
         } else {
             val paint = Paint().apply { colorFilter = ColorMatrixColorFilter(matrix) }
-            previewView.setLayerType(View.LAYER_TYPE_HARDWARE, paint)
+            view.setLayerType(View.LAYER_TYPE_HARDWARE, paint)
         }
     }
 
@@ -518,10 +588,11 @@ class RemoteCamera(
                 .createPoint(x, y)
         } else {
             // Snapshot frames are the centre square of the on-screen preview.
-            val side = minOf(previewView.width, previewView.height).toFloat()
-            previewView.meteringPointFactory.createPoint(
-                (previewView.width - side) / 2 + u * side,
-                (previewView.height - side) / 2 + v * side,
+            val view = previewView ?: return
+            val side = minOf(view.width, view.height).toFloat()
+            view.meteringPointFactory.createPoint(
+                (view.width - side) / 2 + u * side,
+                (view.height - side) / 2 + v * side,
             )
         }
         focus(point) { ok -> send(Paths.FOCUS_RESULT, (if (ok) "1" else "0").toByteArray()) }
@@ -608,14 +679,15 @@ class RemoteCamera(
         snapshotJob?.cancel()
         snapshotJob = null
         if (!enabled) return
-        snapshotJob = activity.lifecycleScope.launch {
+        snapshotJob = scope.launch {
             while (true) {
                 delay(SNAPSHOT_INTERVAL_MS)
                 val node = watchNode ?: continue
-                if (!streaming || !activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) continue
+                val view = previewView
+                if (!streaming || view == null || !view.isAttachedToWindow) continue
                 val now = SystemClock.elapsedRealtime()
                 if (!tryReserveFrame(now)) continue
-                val bitmap = runCatching { previewView.bitmap }.getOrNull()
+                val bitmap = runCatching { view.bitmap }.getOrNull()
                 val jpeg = bitmap?.let {
                     withContext(Dispatchers.Default) { runCatching { squareJpeg(it) }.getOrNull() }
                 }
@@ -847,6 +919,7 @@ class RemoteCamera(
             }
             is VideoRecordEvent.Finalize -> {
                 recordingSeconds = -1
+                mainHandler.post(onIdleCheck)
                 shutterSound.play(MediaActionSound.STOP_VIDEO_RECORDING)
                 send(Paths.RECORDING, "0".toByteArray())
                 val uri = event.outputResults.outputUri

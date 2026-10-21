@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- dev builds only: live logs to the developer's server over Tailscale
+     (plain HTTP inside the encrypted tunnel). prod builds have no network access. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application android:usesCleartextTraffic="true" />
+</manifest>

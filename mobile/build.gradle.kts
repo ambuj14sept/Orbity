@@ -19,11 +19,22 @@ android {
         versionName = "1.1"
         // Identifies the exact build in the logs.
         buildConfigField("String", "BUILD_TIME", "\"${LocalDateTime.now().withNano(0)}\"")
-        // Developer log server reached over Tailscale; set orbity.logServer in local.properties.
-        val localProperties = Properties().apply {
-            rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+    }
+    // dev: live logs and crash reports to the developer's server (orbity.logServer in
+    // local.properties). prod: no diagnostics and no INTERNET permission at all.
+    flavorDimensions += "channel"
+    productFlavors {
+        create("dev") {
+            dimension = "channel"
+            val localProperties = Properties().apply {
+                rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+            }
+            buildConfigField("String", "LOG_SERVER", "\"${localProperties.getProperty("orbity.logServer", "")}\"")
         }
-        buildConfigField("String", "LOG_SERVER", "\"${localProperties.getProperty("orbity.logServer", "")}\"")
+        create("prod") {
+            dimension = "channel"
+            buildConfigField("String", "LOG_SERVER", "\"\"")
+        }
     }
     signingConfigs {
         // Shared, committed debug key: the phone and watch APKs must be signed with the same key
@@ -74,6 +85,7 @@ dependencies {
     // Play services pulls in an old Fragment; activity-result APIs need 1.3+.
     implementation("androidx.fragment:fragment-ktx:1.8.5")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-service:2.8.7")
 
     implementation("com.google.android.gms:play-services-wearable:18.2.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")

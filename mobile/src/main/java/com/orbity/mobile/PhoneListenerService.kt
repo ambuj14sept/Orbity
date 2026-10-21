@@ -14,8 +14,8 @@ import com.orbity.shared.LOG_TAG
 import com.orbity.shared.Paths
 
 /**
- * Wakes up when the watch app opens while the camera screen is not in the foreground,
- * and brings the camera up on the phone.
+ * Wakes up for watch messages while the camera is not running: starts the camera silently in
+ * the background (via [LaunchActivity]) when the watch app opens, and handles logs and crash reports.
  */
 class PhoneListenerService : WearableListenerService() {
 
@@ -31,16 +31,16 @@ class PhoneListenerService : WearableListenerService() {
                 return
             }
         }
-        // While the camera screen is visible it handles messages itself.
-        if (event.path != Paths.START || CameraActivity.isActive) return
+        // While the camera service runs it handles watch messages itself.
+        if (event.path != Paths.START || CameraService.isRunning) return
 
-        val intent = Intent(this, CameraActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            .putExtra(CameraActivity.EXTRA_WATCH_NODE, event.sourceNodeId)
+        val intent = Intent(this, LaunchActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            .putExtra(LaunchActivity.EXTRA_WATCH_NODE, event.sourceNodeId)
 
         // Apps allowed to draw over other apps may start activities from the background.
         if (Settings.canDrawOverlays(this)) {
-            Log.i(LOG_TAG, "Watch asked for camera; opening camera screen")
+            Log.i(LOG_TAG, "Watch asked for camera; starting it in the background")
             startActivity(intent)
         } else {
             Log.i(LOG_TAG, "Watch asked for camera; no overlay permission, showing notification")
@@ -60,7 +60,7 @@ class PhoneListenerService : WearableListenerService() {
         val notification = android.app.Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentTitle("Watch wants to use the camera")
-            .setContentText("Tap to open Orbity")
+            .setContentText("Tap to start the camera")
             .setContentIntent(pending)
             .setFullScreenIntent(pending, true)
             .setAutoCancel(true)

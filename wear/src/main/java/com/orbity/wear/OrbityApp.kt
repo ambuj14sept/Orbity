@@ -19,8 +19,10 @@ class OrbityApp : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this, "Watch app")
+        // prod builds never collect or forward logs.
+        if (!BuildConfig.DIAGNOSTICS) return
         val header = "Watch ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE}, " +
-            "Orbity ${BuildConfig.VERSION_NAME} built ${BuildConfig.BUILD_TIME}"
+            "Orbity ${BuildConfig.VERSION_NAME} (${BuildConfig.FLAVOR}) built ${BuildConfig.BUILD_TIME}"
         // Watch logs share the link with preview frames: only Orbity's own lines plus warnings,
         // errors and crashes from everything else.
         // HWUI warns once per decoded preview frame; keep only its errors.

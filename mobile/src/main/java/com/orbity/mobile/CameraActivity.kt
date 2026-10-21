@@ -2,11 +2,14 @@ package com.orbity.mobile
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ComponentName
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.provider.Settings
 import android.util.Log
 import android.view.MotionEvent
@@ -47,36 +50,44 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import com.google.android.gms.wearable.MessageClient
-import com.google.android.gms.wearable.MessageEvent
-import com.google.android.gms.wearable.Wearable
 import com.orbity.shared.CaptureMode
 import com.orbity.shared.CrashLog
 import com.orbity.shared.Filter
 import com.orbity.shared.LOG_TAG
 
+/**
+ * The phone's camera screen. The camera itself runs in [CameraService]; this screen starts it,
+ * shows its preview while visible, and leaves it running for the watch when hidden.
+ */
 @SuppressLint("ClickableViewAccessibility") // performClick is called on tap
-class CameraActivity : ComponentActivity(), MessageClient.OnMessageReceivedListener {
+class CameraActivity : ComponentActivity() {
 
-    companion object {
-        const val EXTRA_WATCH_NODE = "watch_node"
-        private const val STATE_WATCH_NODE = "watch_node"
-
-        /** True while this screen is visible and listening for watch messages itself. */
-        @Volatile var isActive = false
-            private set
-    }
-
-    private lateinit var camera: RemoteCamera
-    private var cameraStarted = false
+    private lateinit var previewView: PreviewView
+    private var service: CameraService.LocalBinder? = null
+    private var camera by mutableStateOf<RemoteCamera?>(null)
     private var canLaunchFromWatch by mutableStateOf(false)
     private var crashReports by mutableIntStateOf(0)
+
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+            val local = binder as CameraService.LocalBinder
+            service = local
+            camera = local.camera
+            local.attachScreen(previewView)
+        }
+
+        override fun onServiceDisconnected(name: ComponentName) {
+            service = null
+            camera = null
+        }
+    }
+    private var bound = false
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
             Log.i(LOG_TAG, "Permission results: $grants")
             if (hasPermission(Manifest.permission.CAMERA)) {
-                startCamera()
+                connectCamera()
             } else {
                 Toast.makeText(this, "Orbity needs camera access. Allow it in Settings › Apps.", Toast.LENGTH_LONG).show()
             }
@@ -86,20 +97,17 @@ class CameraActivity : ComponentActivity(), MessageClient.OnMessageReceivedListe
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        val previewView = PreviewView(this).apply {
+        previewView = PreviewView(this).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         }
-        camera = RemoteCamera(this, previewView)
         // Tap to focus, like the system camera.
         previewView.setOnTouchListener { view, event ->
             if (event.action == MotionEvent.ACTION_UP) {
-                camera.focusAtView(event.x, event.y)
+                camera?.focusAtView(event.x, event.y)
                 view.performClick()
             }
             true
         }
-        (savedInstanceState?.getString(STATE_WATCH_NODE) ?: intent.getStringExtra(EXTRA_WATCH_NODE))
-            ?.let(camera::attachWatch)
 
         setContent {
             CameraScreen(
@@ -117,11 +125,11 @@ class CameraActivity : ComponentActivity(), MessageClient.OnMessageReceivedListe
                     CrashLog.clear(this)
                     crashReports = 0
                 },
+                onToggleLogs = { LogUploader.setUserEnabled(this, !LogUploader.userEnabled) },
             )
         }
 
-        if (hasPermission(Manifest.permission.CAMERA)) startCamera()
-        // The microphone (video sound) is optional; ask for anything missing without blocking the camera.
+        // The microphone (video sound, live listening) is optional; ask for anything missing.
         val missing = buildList {
             add(Manifest.permission.CAMERA)
             add(Manifest.permission.RECORD_AUDIO)
@@ -130,24 +138,9 @@ class CameraActivity : ComponentActivity(), MessageClient.OnMessageReceivedListe
         if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
     }
 
-    private fun startCamera() {
-        if (cameraStarted) return
-        cameraStarted = true
-        camera.start()
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        intent.getStringExtra(EXTRA_WATCH_NODE)?.let(camera::attachWatch)
-    }
-
-    // Listen while visible (not just resumed): permission dialogs and the notification
-    // shade pause the activity but the camera keeps running.
     override fun onStart() {
         super.onStart()
-        isActive = true
-        Wearable.getMessageClient(this).addListener(this)
-        camera.onForeground()
+        if (hasPermission(Manifest.permission.CAMERA)) connectCamera()
     }
 
     override fun onResume() {
@@ -158,24 +151,23 @@ class CameraActivity : ComponentActivity(), MessageClient.OnMessageReceivedListe
     }
 
     override fun onStop() {
-        isActive = false
-        Wearable.getMessageClient(this).removeListener(this)
-        camera.onBackground()
+        // The camera keeps running for the watch; the service stops itself once idle.
+        service?.attachScreen(null)
+        if (bound) {
+            unbindService(connection)
+            bound = false
+        }
+        service = null
+        camera = null
         super.onStop()
     }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        // Survive recreation (e.g. dark-mode switch) without losing the watch.
-        if (camera.streaming) outState.putString(STATE_WATCH_NODE, camera.watchNode)
+    /** Starts the camera service (allowed now: this screen is visible) and shows its preview. */
+    private fun connectCamera() {
+        if (bound) return
+        CameraService.start(this, watchNode = null)
+        bound = bindService(Intent(this, CameraService::class.java), connection, 0)
     }
-
-    override fun onDestroy() {
-        camera.release()
-        super.onDestroy()
-    }
-
-    override fun onMessageReceived(event: MessageEvent) = camera.handle(event)
 
     private fun shareCrashReports() {
         val text = CrashLog.reports(this).joinToString("\n\n----------\n\n") { it.readText() }
@@ -193,17 +185,18 @@ class CameraActivity : ComponentActivity(), MessageClient.OnMessageReceivedListe
 @Composable
 private fun CameraScreen(
     previewView: PreviewView,
-    camera: RemoteCamera,
+    camera: RemoteCamera?,
     canLaunchFromWatch: Boolean,
     onAllowLaunch: () -> Unit,
     crashReports: Int,
     onShareReports: () -> Unit,
     onClearReports: () -> Unit,
+    onToggleLogs: () -> Unit,
 ) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
 
-        camera.focusRing?.let { ring ->
+        camera?.focusRing?.let { ring ->
             val color = when (ring.focused) {
                 true -> Color(0xFFFFD60A)
                 false -> Color(0xFFFF6B6B)
@@ -218,25 +211,33 @@ private fun CameraScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.align(Alignment.TopCenter).padding(top = 48.dp),
         ) {
-            Pill(if (camera.watchConnected) "⌚ Controlled by watch" else "Open Orbity on your watch")
-            if (LogUploader.enabled) {
-                val logs = when (LogUploader.reachable) {
-                    true -> "Live logs ✓"
-                    false -> "Live logs: server unreachable — is Tailscale on?"
-                    null -> "Live logs: connecting…"
+            Pill(
+                when {
+                    camera == null -> "Starting camera…"
+                    camera.watchConnected -> "⌚ Controlled by watch"
+                    else -> "Open Orbity on your watch"
                 }
-                Pill(logs, Modifier.padding(top = 8.dp))
+            )
+            if (LogUploader.available) {
+                // dev builds only; tap to switch log sending on or off.
+                val logs = when {
+                    !LogUploader.userEnabled -> "Live logs off (tap to turn on)"
+                    LogUploader.reachable == true -> "Live logs ✓"
+                    LogUploader.reachable == false -> "Live logs: server unreachable — is Tailscale on?"
+                    else -> "Live logs: connecting…"
+                }
+                Pill(logs, Modifier.padding(top = 8.dp).clickable(onClick = onToggleLogs))
             }
-            if (camera.listening) {
+            if (camera?.listening == true) {
                 Pill("🎧 Watch is listening", Modifier.padding(top = 8.dp))
             }
-            if (camera.recordingSeconds >= 0) {
+            if (camera != null && camera.recordingSeconds >= 0) {
                 Pill("● REC ${formatDuration(camera.recordingSeconds)}", Modifier.padding(top = 8.dp), Color(0xFFE53935))
             }
-            if (camera.mode != CaptureMode.PHOTO) {
+            if (camera != null && camera.mode != CaptureMode.PHOTO) {
                 Pill("Mode: ${camera.mode.label}", Modifier.padding(top = 8.dp))
             }
-            if (camera.filter != Filter.ORIGINAL) {
+            if (camera != null && camera.filter != Filter.ORIGINAL) {
                 Pill("Filter: ${camera.filter.label}", Modifier.padding(top = 8.dp))
             }
             if (crashReports > 0) {
@@ -247,7 +248,7 @@ private fun CameraScreen(
             }
         }
 
-        if (camera.countdown > 0) {
+        if (camera != null && camera.countdown > 0) {
             Text(
                 text = camera.countdown.toString(),
                 color = Color.White,
@@ -263,19 +264,19 @@ private fun CameraScreen(
         ) {
             if (!canLaunchFromWatch) {
                 Button(onClick = onAllowLaunch, modifier = Modifier.padding(bottom = 20.dp)) {
-                    Text("Allow watch to open the camera")
+                    Text("Allow watch to start the camera")
                 }
             }
-            val recording = camera.recordingSeconds >= 0
+            val recording = camera != null && camera.recordingSeconds >= 0
             Box(
                 Modifier
                     .size(76.dp)
                     .clip(CircleShape)
-                    .clickable { camera.shutter(0) }
+                    .clickable { camera?.shutter(0) }
                     .border(5.dp, Color.White, CircleShape)
                     .padding(if (recording) 22.dp else 9.dp)
                     .clip(if (recording) RoundedCornerShape(6.dp) else CircleShape)
-                    .background(if (camera.mode.isVideo) Color(0xFFE53935) else Color.White)
+                    .background(if (camera?.mode?.isVideo == true) Color(0xFFE53935) else Color.White)
             )
         }
     }

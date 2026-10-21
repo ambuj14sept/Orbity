@@ -98,7 +98,10 @@ class Handler(BaseHTTPRequestHandler):
 <style>body{{font:17px system-ui;margin:24px;max-width:600px}}li{{margin:14px 0}}
 a{{font-size:19px}}small{{color:#777;display:block}}</style>
 <h2>Orbity builds</h2><ul>{rows(DIST, "/dist/", "*.apk")}</ul>
-<p>Phone APK: tap to install. Watch APK: download, then install with Wear Installer 2.</p>
+<p><b>Orbity-phone / Orbity-watch</b>: normal builds, never send anything off the phone.<br>
+<b>…-dev</b>: also send live logs and crash reports to this server (can be switched off on the phone).<br>
+Install the phone APK by tapping it; install the watch APK with Wear Installer 2.
+Phone and watch builds of either kind work together.</p>
 <h3>Logs</h3><ul>{rows(LOGS, "/logs/", "*.log")}</ul>"""
         data = page.encode()
         self.send_response(200)

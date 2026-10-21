@@ -15,27 +15,60 @@ import kotlin.concurrent.thread
 
 /**
  * Sends phone logs, watch logs and crash reports to the developer's log server
- * (`orbity.logServer` in local.properties, reached over Tailscale). Disabled when not configured.
+ * (`orbity.logServer` in local.properties, reached over Tailscale). Only dev builds have a
+ * server (and the INTERNET permission); there the user can also switch uploads off.
  */
 object LogUploader {
     private const val MAX_QUEUED = 300
     private const val RETRY_MS = 5_000L
+    private const val PREFS = "orbity"
+    private const val KEY_ENABLED = "send_logs"
 
     private class Item(val channel: String, val text: String, val onSent: (() -> Unit)? = null)
 
     private val server = BuildConfig.LOG_SERVER.trimEnd('/')
-    val enabled = server.isNotBlank()
+
+    /** This build can upload at all (dev builds). */
+    val available = server.isNotBlank()
+
+    /** The switch on the phone screen; remembered across launches. */
+    var userEnabled by mutableStateOf(true)
+        private set
+
+    val enabled get() = available && userEnabled
 
     private val queue = LinkedBlockingDeque<Item>()
     private val crashFilesQueued = mutableSetOf<String>()
+    private var started = false
 
     /** null until the first upload attempt; shown on the phone screen. */
     var reachable by mutableStateOf<Boolean?>(null)
         private set
 
-    init {
-        if (enabled) thread(name = "orbity-upload", isDaemon = true) { uploadLoop() }
+    @Synchronized
+    fun init(context: Context) {
+        if (!available || started) return
+        started = true
+        userEnabled = prefs(context).getBoolean(KEY_ENABLED, true)
+        thread(name = "orbity-upload", isDaemon = true) { uploadLoop() }
     }
+
+    fun setUserEnabled(context: Context, on: Boolean) {
+        if (!available) return
+        userEnabled = on
+        prefs(context).edit().putBoolean(KEY_ENABLED, on).apply()
+        Log.i(LOG_TAG, "Log upload ${if (on) "on" else "off"}")
+        if (on) {
+            uploadCrashReports(context)
+        } else {
+            // Nothing queued while off is sent later.
+            queue.clear()
+            synchronized(crashFilesQueued) { crashFilesQueued.clear() }
+            reachable = null
+        }
+    }
+
+    private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun enqueue(channel: String, text: String) = enqueue(Item(channel, text))
 
@@ -59,8 +92,15 @@ object LogUploader {
     private fun uploadLoop() {
         while (true) {
             val item = queue.takeFirst()
-            while (!post(item)) Thread.sleep(RETRY_MS)
-            item.onSent?.invoke()
+            var sent = false
+            while (enabled) {
+                if (post(item)) {
+                    sent = true
+                    break
+                }
+                Thread.sleep(RETRY_MS)
+            }
+            if (sent) item.onSent?.invoke()
         }
     }
 
