@@ -1,0 +1,14 @@
+# Orbity developer server (log collection + APK downloads over Tailscale).
+# Install: cp tools/orbity-dev.service ~/.config/systemd/user/ && systemctl --user enable --now orbity-dev
+[Unit]
+Description=Orbity developer log/download server
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/Desktop/Repositories/Orbity
+ExecStart=/usr/bin/python3 -u tools/log_server.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

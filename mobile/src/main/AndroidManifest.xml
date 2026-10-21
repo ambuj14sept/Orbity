@@ -4,6 +4,10 @@
     <uses-feature android:name="android.hardware.camera.any" />
 
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Sound for videos; recording works without it (silent) if denied. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Live logs to the developer's log server over Tailscale (plain HTTP inside the encrypted tunnel). -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Lets the app bring the camera to the foreground when the watch asks, like iPhone Camera Remote. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -14,6 +18,7 @@
         android:icon="@android:drawable/ic_menu_camera"
         android:label="@string/app_name"
         android:largeHeap="true"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
         <activity
@@ -38,6 +43,7 @@
                 <data android:host="*" />
                 <data android:pathPrefix="/orbity/start" />
                 <data android:pathPrefix="/orbity/crash" />
+                <data android:pathPrefix="/orbity/log" />
             </intent-filter>
         </service>
     </application>

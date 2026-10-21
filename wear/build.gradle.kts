@@ -1,3 +1,5 @@
+import java.time.LocalDateTime
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -11,8 +13,10 @@ android {
         applicationId = "com.orbity.remote"
         minSdk = 30
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
+        // Identifies the exact build in the logs.
+        buildConfigField("String", "BUILD_TIME", "\"${LocalDateTime.now().withNano(0)}\"")
     }
     signingConfigs {
         // Shared, committed debug key: the phone and watch APKs must be signed with the same key
@@ -33,7 +37,10 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

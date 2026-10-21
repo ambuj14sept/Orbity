@@ -5,10 +5,12 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.provider.Settings
+import android.util.Log
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.Wearable
 import com.google.android.gms.wearable.WearableListenerService
 import com.orbity.shared.CrashLog
+import com.orbity.shared.LOG_TAG
 import com.orbity.shared.Paths
 
 /**
@@ -18,9 +20,16 @@ import com.orbity.shared.Paths
 class PhoneListenerService : WearableListenerService() {
 
     override fun onMessageReceived(event: MessageEvent) {
-        if (event.path == Paths.CRASH) {
-            CrashLog.save(this, "Forwarded from watch:\n\n" + String(event.data))
-            return
+        when (event.path) {
+            Paths.LOG -> {
+                LogUploader.enqueue("watch", String(event.data))
+                return
+            }
+            Paths.CRASH -> {
+                CrashLog.save(this, "Forwarded from watch:\n\n" + String(event.data))
+                LogUploader.uploadCrashReports(this)
+                return
+            }
         }
         // While the camera screen is visible it handles messages itself.
         if (event.path != Paths.START || CameraActivity.isActive) return
@@ -31,8 +40,10 @@ class PhoneListenerService : WearableListenerService() {
 
         // Apps allowed to draw over other apps may start activities from the background.
         if (Settings.canDrawOverlays(this)) {
+            Log.i(LOG_TAG, "Watch asked for camera; opening camera screen")
             startActivity(intent)
         } else {
+            Log.i(LOG_TAG, "Watch asked for camera; no overlay permission, showing notification")
             showOpenCameraNotification(intent)
             Wearable.getMessageClient(this).sendMessage(event.sourceNodeId, Paths.NEEDS_PHONE, null)
         }

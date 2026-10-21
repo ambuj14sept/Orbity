@@ -13,6 +13,7 @@ import java.util.Locale
  */
 object CrashLog {
     private const val DIR = "crash-reports"
+    private const val SENT_SUFFIX = ".sent"
 
     /** Message size on the Data Layer is limited to ~100 KB. */
     const val MAX_REPORT_CHARS = 60_000
@@ -37,6 +38,13 @@ object CrashLog {
 
     fun reports(context: Context): List<File> =
         File(context.filesDir, DIR).listFiles()?.sortedBy { it.name }.orEmpty()
+
+    /** Reports not yet uploaded to the log server. */
+    fun unsent(context: Context): List<File> = reports(context).filterNot { it.name.endsWith(SENT_SUFFIX) }
+
+    fun markSent(file: File) {
+        file.renameTo(File(file.parentFile, file.name + SENT_SUFFIX))
+    }
 
     fun clear(context: Context) {
         reports(context).forEach { it.delete() }

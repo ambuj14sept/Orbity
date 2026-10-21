@@ -21,6 +21,17 @@ and the watch and phone apps always trust each other.
 ## Updating
 Install the new APKs the same way; settings and photos are kept.
 
+## Live logs and downloads over Tailscale
+`tools/log_server.py` runs on the dev machine (as the user service `tools/orbity-dev.service`) and listens on
+its Tailscale addresses (IPv4 + IPv6) and localhost, port 8077:
+- `http://<machine>.<tailnet>.ts.net:8077/` — download page for the latest APKs in `dist/`
+- the phone app uploads its own and the watch's logs and crash reports there (`logs/`), when built with
+  `orbity.logServer=http://<machine>.<tailnet>.ts.net:8077` (the full MagicDNS name; Android often cannot resolve the short name) in `local.properties`. The phone screen shows "Live logs ✓".
+
+Service control: `systemctl --user status|restart orbity-dev`, `journalctl --user -u orbity-dev`.
+If the phone cannot open the page while Tailscale is on, allow the port:
+`sudo ufw allow in on tailscale0 to any port 8077 proto tcp`.
+
 ## Reporting bugs
 - Crashes on either device are saved automatically. Watch crashes are forwarded to the phone the next
   time the watch app connects. The phone camera screen then shows **Share crash reports** — send that text.

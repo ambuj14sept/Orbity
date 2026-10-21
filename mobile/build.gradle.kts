@@ -1,3 +1,6 @@
+import java.time.LocalDateTime
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,8 +15,15 @@ android {
         applicationId = "com.orbity.remote"
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
+        // Identifies the exact build in the logs.
+        buildConfigField("String", "BUILD_TIME", "\"${LocalDateTime.now().withNano(0)}\"")
+        // Developer log server reached over Tailscale; set orbity.logServer in local.properties.
+        val localProperties = Properties().apply {
+            rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+        }
+        buildConfigField("String", "LOG_SERVER", "\"${localProperties.getProperty("orbity.logServer", "")}\"")
     }
     signingConfigs {
         // Shared, committed debug key: the phone and watch APKs must be signed with the same key
@@ -34,7 +44,10 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -50,6 +63,8 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraX")
     implementation("androidx.camera:camera-lifecycle:$cameraX")
     implementation("androidx.camera:camera-view:$cameraX")
+    implementation("androidx.camera:camera-video:$cameraX")
+    implementation("androidx.camera:camera-extensions:$cameraX")
 
     implementation(platform("androidx.compose:compose-bom:2024.10.01"))
     implementation("androidx.compose.ui:ui")
